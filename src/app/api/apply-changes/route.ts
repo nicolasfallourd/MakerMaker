@@ -146,109 +146,99 @@ export async function POST(request: NextRequest) {
     console.log('📤 [DEBUG] Sending to FLUX Kontext Pro:');
     console.log('🔧 Input Parameters:', JSON.stringify(inputParams, null, 2));
 
-    // Use FLUX Kontext Pro via Replicate
+    // Use FLUX Kontext Pro via Replicate (direct fetch to avoid CSP issues)
     console.log('⏳ [DEBUG] Calling FLUX Kontext Pro API...');
-    const output = await replicate.run(
-      "black-forest-labs/flux-kontext-pro",
-      {
-        input: inputParams
+    
+    // Get the latest FLUX Kontext Pro model
+    const modelRes = await fetch('https://api.replicate.com/v1/models/black-forest-labs/flux-kontext-pro', {
+      headers: {
+        Authorization: `Token ${process.env.REPLICATE_API_TOKEN}`,
+      },
+    });
+    
+    if (!modelRes.ok) {
+      console.error('Failed to get model info:', await modelRes.text());
+      return NextResponse.json({ error: 'Failed to get model info' }, { status: 500 });
+    }
+    
+    const modelData = await modelRes.json();
+    const latestVersion = modelData.latest_version.id;
+    console.log('Using FLUX Kontext Pro version:', latestVersion);
+    
+    // Create prediction using direct Replicate API
+    const replicateRes = await fetch('https://api.replicate.com/v1/predictions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Token ${process.env.REPLICATE_API_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        version: latestVersion,
+        input: inputParams,
+      }),
+    });
+
+    if (!replicateRes.ok) {
+      const replicateError = await replicateRes.text();
+      console.error('Replicate API error:', replicateError);
+      return NextResponse.json({ error: 'Replicate API error: ' + replicateError }, { status: 500 });
+    }
+
+    const prediction = await replicateRes.json();
+    console.log('Prediction created:', prediction.id);
+
+    // Poll for completion
+    let result = prediction;
+    const maxAttempts = 60; // 3 minutes max
+    let attempts = 0;
+
+    while (result.status !== 'succeeded' && result.status !== 'failed' && attempts < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, 3000)); // Wait 3 seconds
+      attempts++;
+
+      const pollRes = await fetch(`https://api.replicate.com/v1/predictions/${result.id}`, {
+        headers: {
+          Authorization: `Token ${process.env.REPLICATE_API_TOKEN}`,
+        },
+      });
+
+      if (pollRes.ok) {
+        result = await pollRes.json();
+        console.log(`Poll attempt ${attempts}: ${result.status}`);
+      } else {
+        console.error('Poll failed:', await pollRes.text());
+        break;
       }
-    );
+    }
+
+    if (result.status !== 'succeeded') {
+      const errorMsg = result.error || 'Generation timed out';
+      console.error('FLUX generation failed:', errorMsg);
+      return NextResponse.json({ error: 'FLUX generation failed: ' + errorMsg }, { status: 500 });
+    }
+
+    const output = result.output;
 
     console.log('\n📥 [DEBUG] FLUX Kontext Pro Response:');
     console.log('✅ [DEBUG] FLUX Kontext Pro Output:', output);
     console.log('✅ [DEBUG] Output Type:', typeof output);
     console.log('✅ [DEBUG] Output Constructor:', output?.constructor?.name);
 
-    // Handle different output formats from FLUX Kontext Pro
+    // Handle output from direct Replicate API (usually string or array)
     let generatedImageUrl: string;
     
     if (typeof output === 'string') {
       // Direct URL string
       generatedImageUrl = output;
-      console.log('✅ [DEBUG] Using direct URL string:', generatedImageUrl);
+      console.log('✅ Using direct URL string:', generatedImageUrl);
     } else if (Array.isArray(output) && output.length > 0) {
       // Array of URLs, take the first one
-      if (typeof output[0] === 'string') {
-        generatedImageUrl = output[0];
-        console.log('✅ [DEBUG] Using first URL from array:', generatedImageUrl);
-      } else {
-        // Handle array of FileOutput objects
-        const fileOutput = output[0] as Record<string, unknown>;
-        if (fileOutput && typeof fileOutput.url === 'string') {
-          generatedImageUrl = fileOutput.url;
-          console.log('✅ [DEBUG] Using URL from FileOutput in array:', generatedImageUrl);
-        } else {
-          throw new Error('Could not extract URL from array of FileOutput objects');
-        }
-      }
-    } else if (output && typeof output === 'object') {
-      // Handle FileOutput object from Replicate
-      console.log('✅ [DEBUG] Object keys:', Object.keys(output));
-      console.log('✅ [DEBUG] Object prototype:', Object.getPrototypeOf(output));
-      console.log('✅ [DEBUG] Object toString:', output.toString());
-      
-      const outputObj = output as Record<string, unknown>;
-      
-      // Try to access the url property directly
-      try {
-        const urlValue = outputObj.url;
-        console.log('✅ [DEBUG] Direct url access:', urlValue, typeof urlValue);
-        
-        if (urlValue && typeof urlValue === 'string') {
-          generatedImageUrl = urlValue;
-          console.log('✅ [DEBUG] Using URL from FileOutput object:', generatedImageUrl);
-        } else if (outputObj.constructor?.name === 'FileOutput') {
-          // For FileOutput objects, try to convert to string or access hidden properties
-          console.log('✅ [DEBUG] Attempting to extract URL from FileOutput...');
-          
-          // Try different approaches to get the URL
-          const stringified = String(output);
-          console.log('✅ [DEBUG] FileOutput stringified:', stringified);
-          
-          // Check if it's a URL-like string
-          if (stringified.startsWith('http')) {
-            generatedImageUrl = stringified;
-            console.log('✅ [DEBUG] Using stringified FileOutput as URL:', generatedImageUrl);
-          } else {
-            // Try to find URL in object descriptor properties
-            const descriptors = Object.getOwnPropertyDescriptors(output);
-            console.log('✅ [DEBUG] Property descriptors:', Object.keys(descriptors));
-            
-            if (descriptors.url && descriptors.url.value) {
-              generatedImageUrl = descriptors.url.value;
-              console.log('✅ [DEBUG] Using URL from property descriptor:', generatedImageUrl);
-            } else {
-              throw new Error('FLUX Kontext Pro returned a FileOutput object but could not extract the URL. This might require using replicate.files.download() method.');
-            }
-          }
-        } else {
-          // Check for other common URL fields
-          const possibleUrlFields = ['image_url', 'output_url', 'result', 'data'];
-          let foundUrl: string | null = null;
-          
-          for (const field of possibleUrlFields) {
-            if (outputObj[field] && typeof outputObj[field] === 'string') {
-              foundUrl = outputObj[field];
-              break;
-            }
-          }
-          
-          if (foundUrl) {
-            generatedImageUrl = foundUrl;
-            console.log('✅ [DEBUG] Using URL from field:', foundUrl);
-          } else {
-            console.error('✅ [DEBUG] Could not find URL in object:', JSON.stringify(output, null, 2));
-            throw new Error('Could not extract image URL from FLUX Kontext Pro response');
-          }
-        }
-      } catch (error) {
-        console.error('✅ [DEBUG] Error accessing FileOutput properties:', error);
-        throw new Error('Failed to access FileOutput URL property');
-      }
+      generatedImageUrl = String(output[0]);
+      console.log('✅ Using first URL from array:', generatedImageUrl);
     } else {
-      console.error('✅ [DEBUG] Unexpected output format:', output);
-      throw new Error('Unexpected output format from FLUX Kontext Pro');
+      console.error('❌ Unexpected output format:', typeof output);
+      console.error('❌ Full output:', JSON.stringify(output, null, 2));
+      return NextResponse.json({ error: 'Unexpected output format from FLUX Kontext Pro' }, { status: 500 });
     }
 
     console.log('\n🎉 [DEBUG] Successfully processed FLUX Kontext Pro response:');
