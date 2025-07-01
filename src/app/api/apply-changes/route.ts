@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
     // Check if this is a FormData request (custom image upload)
     const contentType = request.headers.get('content-type');
     let imageUrl: string;
-    let analysisResult: any;
+    let analysisResult: Record<string, unknown> | null;
     let customPrompt: string;
     let isCustomImage = false;
 
@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
       const formData = await request.formData();
       const customImage = formData.get('customImage') as File;
       customPrompt = formData.get('customPrompt') as string;
-      const useCustomImage = formData.get('useCustomImage') as string;
+
 
       if (!customImage) {
         return NextResponse.json(
@@ -91,10 +91,11 @@ export async function POST(request: NextRequest) {
     
     if (customPrompt) {
       prompt = customPrompt;
-    } else if (analysisResult && analysisResult.textBlocks) {
+    } else if (analysisResult && 'textBlocks' in analysisResult && Array.isArray(analysisResult.textBlocks)) {
       prompt = "Update this Instagram story image by replacing the text content as follows:\n\n";
       
-      const changesFound = analysisResult.textBlocks.some((block: any) => block.newContent);
+      const textBlocks = analysisResult.textBlocks as Array<Record<string, unknown>>;
+      const changesFound = textBlocks.some((block) => 'newContent' in block && block.newContent);
       
       if (!changesFound) {
         return NextResponse.json(
@@ -103,9 +104,12 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      analysisResult.textBlocks.forEach((block: any, index: number) => {
-        if (block.newContent) {
-          prompt += `${block.type}: Replace "${block.originalContent}" with "${block.newContent}"\n`;
+      textBlocks.forEach((block) => {
+        if ('newContent' in block && block.newContent) {
+          const type = 'type' in block ? String(block.type) : 'Text';
+          const originalContent = 'originalContent' in block ? String(block.originalContent) : '';
+          const newContent = String(block.newContent);
+          prompt += `${type}: Replace "${originalContent}" with "${newContent}"\n`;
         }
       });
 
@@ -170,7 +174,7 @@ export async function POST(request: NextRequest) {
         console.log('✅ [DEBUG] Using first URL from array:', generatedImageUrl);
       } else {
         // Handle array of FileOutput objects
-        const fileOutput = output[0] as any;
+        const fileOutput = output[0] as Record<string, unknown>;
         if (fileOutput && typeof fileOutput.url === 'string') {
           generatedImageUrl = fileOutput.url;
           console.log('✅ [DEBUG] Using URL from FileOutput in array:', generatedImageUrl);
@@ -184,7 +188,7 @@ export async function POST(request: NextRequest) {
       console.log('✅ [DEBUG] Object prototype:', Object.getPrototypeOf(output));
       console.log('✅ [DEBUG] Object toString:', output.toString());
       
-      const outputObj = output as any;
+      const outputObj = output as Record<string, unknown>;
       
       // Try to access the url property directly
       try {
@@ -257,10 +261,11 @@ export async function POST(request: NextRequest) {
       prompt: prompt,
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Apply changes error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to apply changes';
     return NextResponse.json(
-      { error: error.message || 'Failed to apply changes' },
+      { error: errorMessage },
       { status: 500 }
     );
   }

@@ -111,10 +111,14 @@ Please analyze the image and return ONLY the JSON structure with all the text bl
       outputString = output;
     } else if (output && typeof output === 'object') {
       // OpenAI might return an object with choices or content
-      const outputObj = output as any;
-      if (outputObj.choices && outputObj.choices[0] && outputObj.choices[0].message) {
-        outputString = outputObj.choices[0].message.content;
-      } else if (outputObj.content) {
+      const outputObj = output as Record<string, unknown>;
+      if (outputObj.choices && Array.isArray(outputObj.choices) && outputObj.choices[0] && 
+          typeof outputObj.choices[0] === 'object' && outputObj.choices[0] !== null &&
+          'message' in outputObj.choices[0] && 
+          typeof outputObj.choices[0].message === 'object' && outputObj.choices[0].message !== null &&
+          'content' in outputObj.choices[0].message) {
+        outputString = String(outputObj.choices[0].message.content);
+      } else if (outputObj.content && typeof outputObj.content === 'string') {
         outputString = outputObj.content;
       } else {
         outputString = JSON.stringify(output);
@@ -132,7 +136,7 @@ Please analyze the image and return ONLY the JSON structure with all the text bl
         // If no JSON found, return the raw text
         analysisResult = { rawResponse: outputString };
       }
-    } catch (parseError) {
+    } catch {
       // If JSON parsing fails, return the raw response
       analysisResult = { rawResponse: outputString };
     }
@@ -142,10 +146,11 @@ Please analyze the image and return ONLY the JSON structure with all the text bl
       analysis: analysisResult,
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Analysis error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to analyze story';
     return NextResponse.json(
-      { error: error.message || 'Failed to analyze story' },
+      { error: errorMessage },
       { status: 500 }
     );
   }
